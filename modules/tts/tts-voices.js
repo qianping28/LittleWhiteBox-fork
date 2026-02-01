@@ -12,7 +12,11 @@ window.XB_TTS_TTS2_VOICE_INFO = [
   { "value": "zh_female_meilinvyou_saturn_bigtts", "name": "魅力女友", "scene": "视频配音" },
   { "value": "zh_female_santongyongns_saturn_bigtts", "name": "流畅女声", "scene": "视频配音" },
   { "value": "zh_male_ruyayichen_saturn_bigtts", "name": "儒雅逸辰", "scene": "视频配音" },
-  { "value": "zh_female_xueayi_saturn_bigtts", "name": "儿童绘本", "scene": "有声阅读" }
+  { "value": "zh_female_xueayi_saturn_bigtts", "name": "儿童绘本", "scene": "有声阅读" },
+  { "value": "saturn_zh_female_tiaopigongzhu_tob", "name": "调皮公主", "scene": "企业版" },
+  { "value": "saturn_zh_female_keainvsheng_tob", "name": "可爱女生", "scene": "企业版" },
+  { "value": "saturn_zh_female_cancan_tob", "name": "知性灿灿", "scene": "企业版" },
+  { "value": "saturn_zh_male_tiancaitongzhuo_tob", "name": "天才同桌", "scene": "企业版" }
 ];
 
 window.XB_TTS_VOICE_DATA = [
@@ -28,7 +32,11 @@ window.XB_TTS_VOICE_DATA = [
   { "value": "zh_female_santongyongns_saturn_bigtts", "name": "流畅女声", "scene": "视频配音" },
   { "value": "zh_male_ruyayichen_saturn_bigtts", "name": "儒雅逸辰", "scene": "视频配音" },
   { "value": "zh_female_xueayi_saturn_bigtts", "name": "儿童绘本", "scene": "有声阅读" },
-  
+  { "value": "saturn_zh_female_tiaopigongzhu_tob", "name": "调皮公主", "scene": "企业版" },
+  { "value": "saturn_zh_female_keainvsheng_tob", "name": "可爱女生", "scene": "企业版" },
+  { "value": "saturn_zh_female_cancan_tob", "name": "知性灿灿", "scene": "企业版" },
+  { "value": "saturn_zh_male_tiancaitongzhuo_tob", "name": "天才同桌", "scene": "企业版" },
+
   // ========== TTS 1.0 方言 ==========
   { "value": "zh_female_wanqudashu_moon_bigtts", "name": "湾区大叔", "scene": "趣味方言" },
   { "value": "zh_female_daimengchuanmei_moon_bigtts", "name": "呆萌川妹", "scene": "趣味方言" },

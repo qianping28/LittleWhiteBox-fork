@@ -25,12 +25,13 @@ import {
 } from "./tts-panel.js";
 import { getCacheEntry, setCacheEntry, getCacheStats, clearExpiredCache, clearAllCache, pruneCache } from './tts-cache.js';
 import { speakMessageFree, clearAllFreeQueues, clearFreeQueueForMessage } from './tts-free-provider.js';
-import { 
-    speakMessageAuth, 
-    speakSegmentAuth, 
-    inferResourceIdBySpeaker, 
-    buildV3Headers, 
-    speedToV3SpeechRate 
+import {
+    speakMessageAuth,
+    speakSegmentAuth,
+    inferResourceIdBySpeaker,
+    buildV3Headers,
+    speedToV3SpeechRate,
+    resolveContextTexts
 } from './tts-auth-provider.js';
 import { postToIframe, isTrustedIframeEvent } from "../../core/iframe-messaging.js";
 
@@ -55,21 +56,23 @@ let ndRenderTimer = null;
 function scheduleNdRerender(mesText) {
     ndRenderPending.add(mesText);
     if (ndRenderTimer) return;
-    
+
     ndRenderTimer = setTimeout(() => {
         ndRenderTimer = null;
         const pending = Array.from(ndRenderPending);
         ndRenderPending.clear();
-        
+
         if (!isModuleEnabled()) return;
-        
+
         for (const el of pending) {
             if (!el.isConnected) continue;
             TTS_DIRECTIVE_REGEX.lastIndex = 0;
             // Tests existing message HTML only.
             // eslint-disable-next-line no-unsanitized/property
             if (TTS_DIRECTIVE_REGEX.test(el.innerHTML)) {
-                enhanceTtsDirectives(el);
+                const mesEl = el.closest('.mes');
+                const messageId = mesEl ? parseInt(mesEl.getAttribute('mesid'), 10) : null;
+                enhanceTtsDirectives(el, messageId);
             }
         }
     }, 50);
@@ -131,24 +134,26 @@ const processedDirectives = new WeakSet();
 
 function setupDirectiveObserver() {
     if (directiveObserver) return;
-    
+
     directiveObserver = new IntersectionObserver((entries) => {
         if (!isModuleEnabled()) return;
-        
+
         for (const entry of entries) {
             if (!entry.isIntersecting) continue;
-            
+
             const mesText = entry.target;
             if (processedDirectives.has(mesText)) {
                 directiveObserver.unobserve(mesText);
                 continue;
             }
-            
+
             TTS_DIRECTIVE_REGEX.lastIndex = 0;
             // Tests existing message HTML only.
             // eslint-disable-next-line no-unsanitized/property
             if (TTS_DIRECTIVE_REGEX.test(mesText.innerHTML)) {
-                enhanceTtsDirectives(mesText);
+                const mesEl = mesText.closest('.mes');
+                const messageId = mesEl ? parseInt(mesEl.getAttribute('mesid'), 10) : null;
+                enhanceTtsDirectives(mesText, messageId);
             }
             processedDirectives.add(mesText);
             directiveObserver.unobserve(mesText);
@@ -156,11 +161,17 @@ function setupDirectiveObserver() {
     }, { rootMargin: '300px' });
 }
 
-function observeDirective(mesText) {
+function observeDirective(mesText, messageId = null) {
     if (!mesText || processedDirectives.has(mesText)) return;
-    
+
     setupDirectiveObserver();
-    
+
+    // 获取 messageId（如果未传入）
+    if (messageId === null) {
+        const mesEl = mesText.closest('.mes');
+        messageId = mesEl ? parseInt(mesEl.getAttribute('mesid'), 10) : null;
+    }
+
     // 已在视口附近，立即处理
     const rect = mesText.getBoundingClientRect();
     if (rect.top < window.innerHeight + 300 && rect.bottom > -300) {
@@ -168,12 +179,12 @@ function observeDirective(mesText) {
         // Tests existing message HTML only.
         // eslint-disable-next-line no-unsanitized/property
         if (TTS_DIRECTIVE_REGEX.test(mesText.innerHTML)) {
-            enhanceTtsDirectives(mesText);
+            enhanceTtsDirectives(mesText, messageId);
         }
         processedDirectives.add(mesText);
         return;
     }
-    
+
     // 不在视口，加入观察队列
     directiveObserver.observe(mesText);
 }
@@ -761,51 +772,347 @@ function parseDirectiveParams(raw) {
     return result;
 }
 
-function buildTtsTagHtml(parsed, rawParams) {
+function buildTtsTagHtml(parsed, rawParams, segmentIndex = 0) {
     const parts = [];
     if (parsed.speaker) parts.push(parsed.speaker);
     if (parsed.emotion) parts.push(parsed.emotion);
     if (parsed.context) {
-        const ctx = parsed.context.length > 10 
-            ? parsed.context.slice(0, 10) + '…' 
+        const ctx = parsed.context.length > 10
+            ? parsed.context.slice(0, 10) + '…'
             : parsed.context;
         parts.push(`"${ctx}"`);
     }
-    
+
     const hasParams = parts.length > 0;
     const title = rawParams ? escapeHtml(rawParams.replace(/;/g, '; ')) : '';
-    
-    let html = `<span class="xb-tts-tag" data-has-params="${hasParams}"${title ? ` title="${title}"` : ''}>`;
+
+    let html = `<span class="xb-tts-tag xb-tts-tag-playable" data-has-params="${hasParams}" data-segment-index="${segmentIndex}" data-preload-status="pending"${title ? ` title="${title}"` : ''}>`;
+    html += `<span class="xb-tts-tag-play-btn">▶</span>`;
     html += `<span class="xb-tts-tag-icon">♪</span>`;
-    
+
     if (hasParams) {
         const textParts = parts.map(p => `<span>${escapeHtml(p)}</span>`);
         html += textParts.join('<span class="xb-tts-tag-dot"> · </span>');
     }
-    
+
+    html += `<span class="xb-tts-tag-loading"></span>`;
     html += `</span>`;
     return html;
 }
 
-function enhanceTtsDirectives(container) {
+function enhanceTtsDirectives(container, messageId = null) {
     if (!container) return;
-    
+
     // Rewrites already-rendered message HTML; no new HTML source is introduced here.
     // eslint-disable-next-line no-unsanitized/property
     const html = container.innerHTML;
     TTS_DIRECTIVE_REGEX.lastIndex = 0;
     if (!TTS_DIRECTIVE_REGEX.test(html)) return;
-    
+
+    let segmentIndex = 0;
     TTS_DIRECTIVE_REGEX.lastIndex = 0;
     const enhanced = html.replace(TTS_DIRECTIVE_REGEX, (match, params) => {
         const parsed = parseDirectiveParams(params);
-        return buildTtsTagHtml(parsed, params);
+        const result = buildTtsTagHtml(parsed, params, segmentIndex);
+        segmentIndex++;
+        return result;
     });
-    
+
     if (enhanced !== html) {
         // Replaces existing message HTML with enhanced tokens only.
         // eslint-disable-next-line no-unsanitized/property
         container.innerHTML = enhanced;
+
+        // 绑定点击事件并触发预加载
+        if (messageId !== null && Number.isFinite(messageId)) {
+            bindTagClickEvents(container, messageId);
+            triggerPreload(container, messageId);
+        }
+    }
+}
+
+// 存储预加载的音频缓存 { messageId: { segmentIndex: audioBlob } }
+const preloadedAudioMap = new Map();
+
+function bindTagClickEvents(container, messageId) {
+    const tags = container.querySelectorAll('.xb-tts-tag-playable');
+    tags.forEach(tag => {
+        tag.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const segmentIndex = parseInt(tag.dataset.segmentIndex, 10);
+            if (Number.isFinite(segmentIndex)) {
+                handleTagPlayClick(messageId, segmentIndex, tag);
+            }
+        });
+    });
+}
+
+async function triggerPreload(container, messageId) {
+    if (!isModuleEnabled()) return;
+
+    const message = getMessageData(messageId);
+    if (!message || message.is_user) return;
+
+    const speakText = getSpeakTextFromMessage(message);
+    if (!speakText.trim()) return;
+
+    const segments = parseTtsSegments(speakText);
+    if (!segments.length) return;
+
+    const mySpeakers = config.volc?.mySpeakers || [];
+    const defaultSpeaker = config.volc.defaultSpeaker || FREE_DEFAULT_VOICE;
+    const defaultResolved = resolveSpeakerWithSource('', mySpeakers, defaultSpeaker);
+
+    const resolvedSegments = segments.map(seg => {
+        const resolved = seg.speaker
+            ? resolveSpeakerWithSource(seg.speaker, mySpeakers, defaultSpeaker)
+            : defaultResolved;
+        return {
+            ...seg,
+            resolvedSpeaker: resolved.value,
+            resolvedSource: resolved.source,
+            resolvedResourceId: resolved.resourceId
+        };
+    });
+
+    // 初始化该消息的预加载缓存
+    if (!preloadedAudioMap.has(messageId)) {
+        preloadedAudioMap.set(messageId, new Map());
+    }
+    const audioCache = preloadedAudioMap.get(messageId);
+
+    // 获取所有标签元素
+    const tags = container.querySelectorAll('.xb-tts-tag-playable');
+
+    // 并行预加载所有段落
+    const preloadPromises = resolvedSegments.map(async (seg, index) => {
+        const tag = tags[index];
+        if (!tag) return;
+
+        try {
+            tag.dataset.preloadStatus = 'loading';
+            const audioBlob = await preloadSegment(seg, index);
+            if (audioBlob) {
+                audioCache.set(index, audioBlob);
+                tag.dataset.preloadStatus = 'ready';
+            } else {
+                tag.dataset.preloadStatus = 'error';
+            }
+        } catch (err) {
+            console.warn('[TTS] 预加载段落失败:', index, err);
+            tag.dataset.preloadStatus = 'error';
+        }
+    });
+
+    await Promise.allSettled(preloadPromises);
+}
+
+async function preloadSegment(segment, segmentIndex) {
+    const freeSpeed = normalizeSpeed(config?.volc?.speechRate);
+    const voiceKey = segment.resolvedSpeaker || FREE_DEFAULT_VOICE;
+    const emotion = normalizeEmotion(segment.emotion);
+
+    const cacheParams = {
+        providerMode: segment.resolvedSource === 'free' ? 'free' : 'auth',
+        text: segment.text,
+        speaker: voiceKey,
+        freeSpeed,
+        emotion: emotion || '',
+    };
+
+    // 先检查本地缓存
+    const cacheHit = await tryLoadLocalCache(cacheParams);
+    if (cacheHit?.entry?.blob) {
+        return cacheHit.entry.blob;
+    }
+
+    // 生成语音
+    if (segment.resolvedSource === 'free') {
+        try {
+            const { synthesizeFreeV1 } = await import('./tts-api.js');
+            const { audioBase64 } = await synthesizeFreeV1({
+                text: segment.text,
+                voiceKey,
+                speed: freeSpeed,
+                emotion: emotion || null,
+            });
+
+            const byteString = atob(audioBase64);
+            const bytes = new Uint8Array(byteString.length);
+            for (let j = 0; j < byteString.length; j++) {
+                bytes[j] = byteString.charCodeAt(j);
+            }
+            const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+
+            // 存入缓存
+            const cacheKey = buildCacheKey(cacheParams);
+            storeLocalCache(cacheKey, audioBlob, {
+                text: segment.text.slice(0, 200),
+                textLength: segment.text.length,
+                speaker: voiceKey,
+                resourceId: 'free',
+            }).catch(() => {});
+
+            return audioBlob;
+        } catch (err) {
+            console.warn('[TTS] 预加载免费语音失败:', err);
+            return null;
+        }
+    } else {
+        // 鉴权模式预加载
+        if (!isAuthConfigured()) return null;
+
+        try {
+            const resourceId = segment.resolvedResourceId || inferResourceIdBySpeaker(segment.resolvedSpeaker);
+            const contextTexts = resolveContextTexts(segment.context, resourceId);
+
+            const params = {
+                appId: config.volc.appId,
+                accessKey: config.volc.accessKey,
+                resourceId,
+                speaker: segment.resolvedSpeaker,
+                text: segment.text,
+                speechRate: speedToV3SpeechRate(config.volc.speechRate),
+                emotion: emotion || null,
+            };
+
+            if (contextTexts.length) {
+                params.contextTexts = contextTexts;
+            }
+
+            const result = await synthesizeV3(params, buildV3Headers(resourceId, config));
+
+            if (result?.audioBlob) {
+                // 存入缓存
+                const cacheKey = buildCacheKey({
+                    ...cacheParams,
+                    providerMode: 'auth',
+                    resourceId,
+                });
+                storeLocalCache(cacheKey, result.audioBlob, {
+                    text: segment.text.slice(0, 200),
+                    textLength: segment.text.length,
+                    speaker: segment.resolvedSpeaker,
+                    resourceId,
+                }).catch(() => {});
+
+                return result.audioBlob;
+            }
+        } catch (err) {
+            console.warn('[TTS] 预加载鉴权语音失败:', err);
+            return null;
+        }
+    }
+
+    return null;
+}
+
+async function handleTagPlayClick(messageId, segmentIndex, tagElement) {
+    if (!isModuleEnabled()) return;
+
+    const audioCache = preloadedAudioMap.get(messageId);
+    const preloadStatus = tagElement?.dataset?.preloadStatus;
+
+    // 如果正在播放当前段落，暂停/继续
+    if (player?.currentItem?.messageId === messageId &&
+        player?.currentItem?.segmentIndex === segmentIndex &&
+        player?.currentAudio) {
+        if (player.currentAudio.paused) {
+            player.currentAudio.play().catch(() => {});
+        } else {
+            player.currentAudio.pause();
+        }
+        return;
+    }
+
+    // 清空当前播放队列
+    clearMessageFromQueue(messageId);
+
+    // 尝试使用预加载的音频
+    if (audioCache && audioCache.has(segmentIndex)) {
+        const audioBlob = audioCache.get(segmentIndex);
+        const state = ensureMessageState(messageId);
+        state.status = 'playing';
+        state.currentSegment = segmentIndex + 1;
+        state.totalSegments = audioCache.size || 1;
+        updateTtsPanel(messageId, state);
+
+        player.enqueue({
+            id: `msg-${messageId}-tag-${segmentIndex}-${Date.now()}`,
+            messageId,
+            segmentIndex,
+            audioBlob,
+            text: '',
+        });
+        return;
+    }
+
+    // 如果预加载失败或未完成，实时生成
+    if (preloadStatus === 'loading') {
+        toastr?.info?.('语音正在生成中，请稍候...');
+        return;
+    }
+
+    // 实时生成语音
+    const message = getMessageData(messageId);
+    if (!message) return;
+
+    const speakText = getSpeakTextFromMessage(message);
+    const segments = parseTtsSegments(speakText);
+    if (!segments[segmentIndex]) return;
+
+    const seg = segments[segmentIndex];
+    const mySpeakers = config.volc?.mySpeakers || [];
+    const defaultSpeaker = config.volc.defaultSpeaker || FREE_DEFAULT_VOICE;
+    const resolved = seg.speaker
+        ? resolveSpeakerWithSource(seg.speaker, mySpeakers, defaultSpeaker)
+        : resolveSpeakerWithSource('', mySpeakers, defaultSpeaker);
+
+    const resolvedSeg = {
+        ...seg,
+        resolvedSpeaker: resolved.value,
+        resolvedSource: resolved.source,
+        resolvedResourceId: resolved.resourceId
+    };
+
+    if (tagElement) tagElement.dataset.preloadStatus = 'loading';
+
+    const state = ensureMessageState(messageId);
+    state.status = 'sending';
+    state.currentSegment = segmentIndex + 1;
+    updateTtsPanel(messageId, state);
+
+    try {
+        const audioBlob = await preloadSegment(resolvedSeg, segmentIndex);
+        if (audioBlob) {
+            if (!preloadedAudioMap.has(messageId)) {
+                preloadedAudioMap.set(messageId, new Map());
+            }
+            preloadedAudioMap.get(messageId).set(segmentIndex, audioBlob);
+
+            if (tagElement) tagElement.dataset.preloadStatus = 'ready';
+
+            state.status = 'playing';
+            updateTtsPanel(messageId, state);
+
+            player.enqueue({
+                id: `msg-${messageId}-tag-${segmentIndex}-${Date.now()}`,
+                messageId,
+                segmentIndex,
+                audioBlob,
+                text: seg.text,
+            });
+        } else {
+            if (tagElement) tagElement.dataset.preloadStatus = 'error';
+            state.status = 'error';
+            state.error = '语音生成失败';
+            updateTtsPanel(messageId, state);
+        }
+    } catch (err) {
+        if (tagElement) tagElement.dataset.preloadStatus = 'error';
+        state.status = 'error';
+        state.error = err?.message || '语音生成失败';
+        updateTtsPanel(messageId, state);
     }
 }
 
@@ -883,10 +1190,10 @@ async function onCharacterMessageRendered(data) {
         
         const mesText = messageEl.querySelector('.mes_text');
         if (mesText) {
-            enhanceTtsDirectives(mesText);
+            enhanceTtsDirectives(mesText, messageId);
             processedDirectives.add(mesText);
         }
-        
+
         updateTtsPanel(messageId, ensureMessageState(messageId));
 
         if (!config?.autoSpeak) return;
@@ -899,9 +1206,10 @@ function onChatChanged() {
     clearAllFreeQueues();
     if (player) player.clear();
     messageStateMap.clear();
+    preloadedAudioMap.clear();
     removeAllTtsPanels();
     resetFloatingState();
-    
+
     setTimeout(() => {
         renderExistingMessageUIs();
     }, 100);
@@ -1367,6 +1675,7 @@ export function cleanupTts() {
     clearPanelConfigHandlers();
 
     messageStateMap.clear();
+    preloadedAudioMap.clear();
     cacheCounters.hits = 0;
     cacheCounters.misses = 0;
     delete window.xiaobaixTts;

@@ -489,12 +489,77 @@ const STYLES = `
     font-style: italic;
     vertical-align: baseline;
     user-select: none;
-    transition: color 0.3s ease;
+    transition: color 0.3s ease, background-color 0.3s ease;
 }
 .xb-tts-tag:hover { color: rgba(255, 255, 255, 0.45); }
 .xb-tts-tag-icon { font-style: normal; font-size: 10px; opacity: 0.7; }
 .xb-tts-tag-dot { opacity: 0.4; }
 .xb-tts-tag[data-has-params="true"] { color: rgba(255, 255, 255, 0.3); }
+
+/* 可点击播放的标签样式 */
+.xb-tts-tag-playable {
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    position: relative;
+}
+.xb-tts-tag-playable:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.6);
+}
+.xb-tts-tag-playable:active {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+/* 播放按钮 */
+.xb-tts-tag-play-btn {
+    font-style: normal;
+    font-size: 9px;
+    opacity: 0.6;
+    margin-right: 2px;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.xb-tts-tag-playable:hover .xb-tts-tag-play-btn {
+    opacity: 1;
+    transform: scale(1.1);
+}
+
+/* 预加载状态样式 */
+.xb-tts-tag-playable[data-preload-status="pending"] .xb-tts-tag-play-btn {
+    opacity: 0.3;
+}
+.xb-tts-tag-playable[data-preload-status="loading"] .xb-tts-tag-play-btn {
+    display: none;
+}
+.xb-tts-tag-playable[data-preload-status="loading"] .xb-tts-tag-loading {
+    display: inline-block;
+}
+.xb-tts-tag-playable[data-preload-status="ready"] .xb-tts-tag-play-btn {
+    opacity: 0.8;
+    color: rgba(140, 200, 255, 0.8);
+}
+.xb-tts-tag-playable[data-preload-status="ready"]:hover .xb-tts-tag-play-btn {
+    color: rgba(140, 200, 255, 1);
+}
+.xb-tts-tag-playable[data-preload-status="error"] .xb-tts-tag-play-btn {
+    color: rgba(255, 100, 100, 0.6);
+}
+
+/* 加载动画 */
+.xb-tts-tag-loading {
+    display: none;
+    width: 10px;
+    height: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-top-color: rgba(140, 200, 255, 0.8);
+    border-radius: 50%;
+    animation: xb-tts-tag-spin 0.8s linear infinite;
+    margin-right: 2px;
+}
+@keyframes xb-tts-tag-spin {
+    to { transform: rotate(360deg); }
+}
 `;
 
 function injectStyles() {

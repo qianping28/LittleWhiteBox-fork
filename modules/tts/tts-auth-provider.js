@@ -28,7 +28,7 @@ function supportsStreaming() {
     }
 }
 
-function resolveContextTexts(context, resourceId) {
+export function resolveContextTexts(context, resourceId) {
     const text = String(context || '').trim();
     if (!text || resourceId !== 'seed-tts-2.0') return [];
     return [text];
@@ -49,7 +49,7 @@ export function inferResourceIdBySpeaker(value, explicitResourceId = null) {
     if (lower.startsWith('icl_') || lower.startsWith('s_')) {
         return 'seed-icl-2.0';
     }
-    if (v.includes('_uranus_') || v.includes('_saturn_') || v.includes('_moon_')) {
+    if (v.includes('_uranus_') || v.includes('_saturn_') || v.includes('_moon_') || lower.startsWith('saturn_')) {
         return 'seed-tts-2.0';
     }
     return 'seed-tts-1.0';
