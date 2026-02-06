@@ -2622,6 +2622,36 @@
 
     function parseXML(xml) {
         const result = { header: {}, members: [], messages: [], actions: [], moments: [], privateMessages: [], privateTarget: null };
+        
+        // 辅助函数：保护 <image>...</image> 块内的竖线，split 后再还原
+        // 注意：先匹配 <image> 标签（它可能包含 ### 块），避免嵌套问题
+        function splitWithHashProtection(str) {
+            const protectedBlocks = [];
+            // 先保护 <image>...</image> 块（包括其中可能包含的 ### 块）
+            let protected = str.replace(/<image>[\s\S]*?<\/image>/gi, (match) => {
+                const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
+                protectedBlocks.push(match);
+                return placeholder;
+            });
+            // 再保护不在 <image> 内的独立 ###...### 块
+            protected = protected.replace(/###[\s\S]*?###/g, (match) => {
+                const placeholder = `__PROTECTED_BLOCK_${protectedBlocks.length}__`;
+                protectedBlocks.push(match);
+                return placeholder;
+            });
+            // 正常 split
+            const parts = protected.split('|');
+            // 还原每个部分中的占位符（按相反顺序还原，确保嵌套正确）
+            return parts.map(part => {
+                let result = part;
+                // 从后往前还原，避免嵌套问题
+                for (let i = protectedBlocks.length - 1; i >= 0; i--) {
+                    result = result.replace(`__PROTECTED_BLOCK_${i}__`, protectedBlocks[i]);
+                }
+                return result;
+            });
+        }
+        
         try {
             const hMatch = xml.match(/<header>([\s\S]*?)<\/header>/i);
             if (hMatch) {
@@ -2680,17 +2710,18 @@
                 const t = msgMatch[1];
                 const allMsgs = [];
 
-                // 修复：使用贪婪匹配到行末，避免内容中的]截断消息
-                const sysRegex = /\[消息\|系统\|(.+?)\](?=\s*$|\s*\[)/gm;
+                // 修复：使用[\s\S]匹配包括换行符在内的所有字符，避免多行内容导致匹配失败
+                const sysRegex = /\[消息\|系统\|([\s\S]+?)\](?=\s*$|\s*\[)/gm;
                 let sm;
                 while ((sm = sysRegex.exec(t)) !== null) {
                     allMsgs.push({ index: sm.index, type: '系统', content: sm[1] });
                 }
 
-                const gRegex = /\[群消息\|(.+?)\](?=\s*$|\s*\[)/gm;
+                // 使用[\s\S]匹配包括换行符在内的所有字符，支持多行消息内容
+                const gRegex = /\[群消息\|([\s\S]+?)\](?=\s*$|\s*\[)/gm;
                 let gm;
                 while ((gm = gRegex.exec(t)) !== null) {
-                    const p = gm[1].split('|');
+                    const p = splitWithHashProtection(gm[1]);
                     const msgType = p[1];
                     if (msgType === '红包') {
                         allMsgs.push({
@@ -2704,19 +2735,34 @@
                             songName: p[2] || '', artist: p[3] || '', reason: p[4] || '', isSelf: false
                         });
                     } else {
-                        allMsgs.push({
-                            index: gm.index, sender: p[0], type: p[1],
-                            content: p[2], extra: p[3] || '', isSelf: false
-                        });
+                        // 对于图片/语音/视频/媒体类型，保持原有的 content + extra 分隔
+                        // 对于文本和其他类型，将所有剩余内容合并（因为可能包含 | 字符）
+                        const needsSeparateExtra = ['图片', '语音', '视频', '媒体'].includes(msgType);
+                        if (needsSeparateExtra && p.length === 4) {
+                            allMsgs.push({
+                                index: gm.index, sender: p[0], type: p[1],
+                                content: p[2], extra: p[3] || '', isSelf: false
+                            });
+                        } else {
+                            // 文本类型或内容包含 | 的情况，合并所有内容
+                            const fullContent = p.slice(2).join('|');
+                            allMsgs.push({
+                                index: gm.index, sender: p[0], type: p[1],
+                                content: fullContent, extra: '', isSelf: false
+                            });
+                        }
                     }
                 }
 
-                const myRegex = /\[我的消息\|(.+?)\](?=\s*$|\s*\[)/gm;
+                // 使用[\s\S]匹配包括换行符在内的所有字符，支持多行消息内容
+                const myRegex = /\[我的消息\|([\s\S]+?)\](?=\s*$|\s*\[)/gm;
                 let mm;
                 while ((mm = myRegex.exec(t)) !== null) {
-                    const p = mm[1].split('|');
+                    const p = splitWithHashProtection(mm[1]);
                     if (p[0] === '@') {
-                        allMsgs.push({ index: mm.index, type: '@', target: p[1], content: p[2], isSelf: true });
+                        // 处理内容中可能包含 | 字符的情况
+                        const fullContent = p.slice(2).join('|');
+                        allMsgs.push({ index: mm.index, type: '@', target: p[1], content: fullContent, isSelf: true });
                     } else if (p[0] === '红包') {
                         allMsgs.push({
                             index: mm.index, type: '红包', redpacketType: p[1] || '拼手气',
@@ -2728,7 +2774,17 @@
                             artist: p[2] || '', reason: p[3] || '', isSelf: true
                         });
                     } else {
-                        allMsgs.push({ index: mm.index, type: p[0], content: p[1], extra: p[2] || '', isSelf: true });
+                        // 对于图片/语音/视频/媒体类型，保持原有的 content + extra 分隔
+                        // 对于文本和其他类型，将所有剩余内容合并（因为可能包含 | 字符）
+                        const msgType = p[0];
+                        const needsSeparateExtra = ['图片', '语音', '视频', '媒体'].includes(msgType);
+                        if (needsSeparateExtra && p.length === 3) {
+                            allMsgs.push({ index: mm.index, type: msgType, content: p[1], extra: p[2] || '', isSelf: true });
+                        } else {
+                            // 文本类型或内容包含 | 的情况，合并所有内容
+                            const fullContent = p.slice(1).join('|');
+                            allMsgs.push({ index: mm.index, type: msgType, content: fullContent, extra: '', isSelf: true });
+                        }
                     }
                 }
 
@@ -2784,11 +2840,13 @@
 const momMatch = xml.match(/<moments>([\s\S]*?)<\/moments>/i);
             if (momMatch) {
                 const t = momMatch[1];
-                const dRegex = /\[动态\|(.+?)\](?=\s*$|\s*\[)/gm;
+                // 使用[\s\S]匹配包括换行符在内的所有字符，支持多行动态内容
+                const dRegex = /\[动态\|([\s\S]+?)\](?=\s*$|\s*\[)/gm;
                 let dm;
                 let momentIndex = 0;
                 while ((dm = dRegex.exec(t)) !== null) {
-                    const p = dm[1].split('|');
+                    // 使用保护函数处理，防止 ###...### 和 <image>...</image> 块内的竖线被错误分割
+                    const p = splitWithHashProtection(dm[1]);
                     momentIndex++;
                     result.moments.push({
                         id: momentIndex,
@@ -2803,10 +2861,11 @@ const momMatch = xml.match(/<moments>([\s\S]*?)<\/moments>/i);
                     });
                 }
 
-                const cRegex = /\[评论\|(.+?)\](?=\s*$|\s*\[)/gm;
+                // 使用[\s\S]匹配包括换行符在内的所有字符，支持多行评论内容
+                const cRegex = /\[评论\|([\s\S]+?)\](?=\s*$|\s*\[)/gm;
                 let cm;
                 while ((cm = cRegex.exec(t)) !== null) {
-                    const p = cm[1].split('|');
+                    const p = splitWithHashProtection(cm[1]);
                     const momentId = parseInt(p[0]) || 1;
                     const moment = result.moments.find(x => x.id === momentId);
                     if (moment) {

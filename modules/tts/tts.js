@@ -823,10 +823,9 @@ function enhanceTtsDirectives(container, messageId = null) {
         // eslint-disable-next-line no-unsanitized/property
         container.innerHTML = enhanced;
 
-        // 绑定点击事件并触发预加载
+        // 绑定点击事件（不再自动预加载，点击时才发送请求）
         if (messageId !== null && Number.isFinite(messageId)) {
             bindTagClickEvents(container, messageId);
-            triggerPreload(container, messageId);
         }
     }
 }
